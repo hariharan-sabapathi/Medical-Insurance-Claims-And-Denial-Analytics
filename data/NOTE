@@ -1,3 +1,1 @@
-## Data Source
-
-This project uses the **CMS Data Entrepreneurs' Synthetic Public Use File (DE-SynPUF)**, a publicly available synthetic Medicare claims dataset provided by the Centers for Medicare & Medicaid Services (CMS). All datasets used in this project can be found in the CMS Data Entrepreneurs' Synthetic Public Use File repository.
+The datasets used in this project are sourced from the CMS Data Entrepreneurs' Synthetic Public Use File (DE-SynPUF), a publicly available synthetic Medicare claims dataset provided by the Centers for Medicare & Medicaid Services (CMS). The dataset can be downloaded from the CMS Data Entrepreneurs' Synthetic Public Use File repository.
