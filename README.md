@@ -30,7 +30,8 @@ dbt staging (stg_fact_claims_adjudication)
 dbt marts (dim_patient, dim_provider, dim_diagnosis, dim_carc_denials, fact_claims_adjudication)
         |
         v
-dbt KPI marts (kpi_header_cards, kpi_clean_claim_rate_by_provider, kpi_ar_aging_matrix, kpi_top_carc_denials)
+dbt KPI marts (kpi_header_cards, kpi_clean_claim_rate_by_provider, kpi_ar_aging_matrix, kpi_top_carc_denials,
+               kpi_preventability_mix, kpi_ar_aging_totals, kpi_provider_extremes, kpi_claim_type_summary)
         |
         v
 Power BI Denial Control Tower dashboard
