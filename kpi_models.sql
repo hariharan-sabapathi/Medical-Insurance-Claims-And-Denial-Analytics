@@ -79,6 +79,52 @@ SELECT
     ROUND(SUM(expected_amt) FILTER (WHERE ADJUDICATION_STATUS='Denied' AND AR_AGING_BUCKET='90+'), 2) AS overdue_ar_90plus
 FROM enriched;
 
+-- 5. Preventable vs non-preventable denial mix (donut/pie chart)
+CREATE OR REPLACE VIEW kpi_preventability_mix AS
+SELECT
+    PREVENTABILITY_BUCKET,
+    SUM(denial_count) AS denial_count,
+    SUM(estimated_financial_loss) AS estimated_financial_loss
+FROM kpi_top_carc_denials
+GROUP BY 1;
+
+-- 6. A/R aging totals across all providers (stacked/column chart)
+CREATE OR REPLACE VIEW kpi_ar_aging_totals AS
+SELECT
+    AR_AGING_BUCKET,
+    SUM(claim_count) AS claim_count,
+    SUM(at_risk_amt_proxy) AS at_risk_amt_proxy
+FROM kpi_ar_aging_matrix
+GROUP BY 1;
+
+-- 7. Best/worst 10 providers by clean claim rate (min 20 claims, for a fair comparison)
+CREATE OR REPLACE VIEW kpi_provider_extremes AS
+WITH base AS (
+    SELECT * FROM kpi_clean_claim_rate_by_provider WHERE total_claims >= 20
+),
+ranked AS (
+    SELECT *,
+        ROW_NUMBER() OVER (ORDER BY clean_claim_rate_pct ASC, total_claims DESC)  AS worst_rank,
+        ROW_NUMBER() OVER (ORDER BY clean_claim_rate_pct DESC, total_claims DESC) AS best_rank
+    FROM base
+)
+SELECT PROVIDER_ID, total_claims, clean_claim_rate_pct,
+       CASE WHEN worst_rank <= 10 THEN 'Bottom 10' WHEN best_rank <= 10 THEN 'Top 10' END AS rank_group
+FROM ranked
+WHERE worst_rank <= 10 OR best_rank <= 10
+ORDER BY clean_claim_rate_pct;
+
+-- 8. Inpatient vs Outpatient comparison (volume, clean claim rate, revenue mix)
+CREATE OR REPLACE VIEW kpi_claim_type_summary AS
+SELECT
+    CLAIM_TYPE,
+    COUNT(*) AS total_claims,
+    COUNT(*) FILTER (WHERE ADJUDICATION_STATUS = 'Denied') AS denied_claims,
+    ROUND(COUNT(*) FILTER (WHERE ADJUDICATION_STATUS = 'Paid - First Pass') * 100.0 / COUNT(*), 2) AS clean_claim_rate_pct,
+    ROUND(SUM(BILLED_PAID_AMT), 2) AS total_paid_amt
+FROM Fact_Claims_Adjudication
+GROUP BY CLAIM_TYPE;
+
 -- Data integrity checks (dbt "not_null" / "unique" / relationship equivalents)
 CREATE OR REPLACE VIEW dq_orphaned_claims AS
 SELECT f.CLAIM_ID FROM Fact_Claims_Adjudication f
