@@ -1,4 +1,4 @@
-# Claims Adjudication & Denial Intelligence Platform
+# Healthcare Claims & Denial Analytics Platform
 
 An end-to-end analytics engineering pipeline that turns CMS Data Entrepreneurs' Synthetic Public Use File (DE-SynPUF) claims data into an executive dashboard for identifying claim denial patterns and revenue-cycle bottlenecks.
 
