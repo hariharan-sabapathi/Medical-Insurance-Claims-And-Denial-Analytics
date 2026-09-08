@@ -1,141 +1,168 @@
 # Medical Insurance Claims & Denial Analytics
 
-Every claim a payer denies carries a Claim Adjustment Reason Code (CARC) stating why — a duplicate submission, a missing prior authorization, a coverage exclusion — and each reason implies a different fix, a different owner, and a different dollar amount stuck in accounts receivable. This project takes a payer's raw claims and denial codes and turns them into a ranked list of which CARCs are costing the most money and which of those losses are actually preventable, so a revenue-cycle team knows what to fix first instead of triaging denials one claim at a time.
+Insurance denials are expensive, but a denial code alone doesn't tell a revenue-cycle team what to fix first. This project takes CMS's synthetic Medicare claims data, models claim adjudication and denial reasons, and turns them into a ranked view of **which denial patterns are costing the most money and which ones are potentially preventable**.
 
-## Business problem
+The result is a data warehouse and Power BI dashboard designed to help a revenue-cycle team prioritize process improvements instead of reviewing denials one claim at a time.
 
-Denial codes are only useful in aggregate: one duplicate claim is a keying error, but thousands of them, sorted by CARC and priced out in dollars at risk, is a process fix worth prioritizing. Manually triaging that volume claim-by-claim — across denial reason, provider, and aging bucket — doesn't scale, so this project builds a data warehouse and an interactive dashboard on top of CMS's synthetic healthcare claims data to surface the highest-dollar, most-preventable denial patterns, compare provider performance, and flag where fixing the front end of the revenue cycle would recover the most money.
+## Business Problem
 
-### Worked example: CARC 18
+A few denied claims are easy to handle. Thousands of denials across providers, denial reasons, and A/R aging buckets are not.
 
-*DE-SynPUF carries no real denial/CARC field, so this project models one (see the `Fact_Claims_Adjudication` note under Data model) — read the numbers below as a product of that model, not as observations.*
+The project answers questions such as:
 
-- **The code:** CARC 18, "Exact duplicate claim/service" — the same claim line submitted to the payer more than once.
-- **Why it dominates this dataset:** a claim is flagged `Denied` when `CLM_PMT_AMT` is null or zero, and `pyspark/ingest_claims.py` then assigns every denied claim a CARC by drawing from a fixed, seeded weight table (`F.rand(seed=42)` against `{"18": 18, "16": 15, "197": 12, "50": 12, ...}`). CARC 18 carries the highest weight in that table, so it comes out as the most frequent code by construction — the weights are chosen to mirror typical real-world RCM denial-reason frequency, but the resulting counts are modeled, not measured.
-- **What the pipeline does with it:** `dim_carc_denials` tags CARC 18 as `Preventable - Process`; `kpi_top_carc_denials` counts every claim assigned CARC 18 and multiplies that count by the average `billed_paid_amt` across claims with `adjudication_status = 'Paid - First Pass'` — a real DE-SynPUF payment amount, not a modeled one — to estimate the dollars at stake:
-  ```sql
-  select carc_code, denial_count, estimated_financial_loss
-  from kpi_top_carc_denials
-  where carc_code = '18';
-  ```
-- **The dollar figure it rolls into:** whatever that query returns once the pipeline is run against a DE-SynPUF sample — real paid amounts, applied to a modeled denial count. Replacing the simulation with actual 835/EOB remittance data (see Future improvements) would make both the count and the dollar figure real.
+- Which denial reasons occur most often?
+- Which CARCs represent the largest estimated financial exposure?
+- Which denials are potentially preventable?
+- Which providers have weaker first-pass performance?
+- Where is money sitting in 30/60/90+ day A/R?
+
+### Example: CARC 18
+
+CARC 18 means **"Exact duplicate claim/service."**
+
+The CMS DE-SynPUF data does not contain a real denial/CARC field, so this project models adjudication and CARC assignment. Denied claims are identified from the payment data, and CARCs are assigned using a fixed, seeded distribution. CARC 18 has the highest modeled weight, so it becomes the most frequent denial reason in this dataset.
+
+The pipeline then:
+
+1. Identifies the modeled denial.
+2. Assigns CARC 18.
+3. Classifies it as **Preventable - Process**.
+4. Counts the affected claims.
+5. Estimates financial exposure using the average paid amount from real paid DE-SynPUF claims.
+
+So the resulting denial counts and dollar exposure are **modeled estimates**, not real payer denial measurements. Replacing the simulation with 835/EOB remittance data would make those metrics real.
 
 ## Architecture
 
-```
-CMS DE-SynPUF CSVs (Beneficiary Summary, Inpatient Claims, Outpatient Claims)
+```text
+CMS DE-SynPUF claims
         |
         v
-Local landing zone (data/raw/)
+Local landing zone
         |
         v
-PySpark ingestion -> inpatient_claims_extract, outpatient_claims_extract, beneficiary_extract
+PySpark ingestion + standardization
         |
         v
-PySpark standardization -> claim segments deduplicated, dates parsed, one row per claim
+Snowflake RAW
         |
         v
-Snowflake RAW schema (landing tables only)
+dbt staging
         |
         v
-dbt staging (stg_fact_claims_adjudication)
+dbt star schema
         |
         v
-dbt marts (dim_patient, dim_provider, dim_diagnosis, dim_carc_denials, fact_claims_adjudication)
+KPI marts
         |
         v
-dbt KPI marts (kpi_header_cards, kpi_clean_claim_rate_by_provider, kpi_ar_aging_matrix, kpi_top_carc_denials,
-               kpi_preventability_mix, kpi_ar_aging_totals, kpi_provider_extremes, kpi_claim_type_summary)
-        |
-        v
-Power BI Denial Control Tower dashboard
+Power BI Denial Control Tower
 ```
 
-A DuckDB-based local prototype mirrors this same pipeline end-to-end without Snowflake/dbt/Power BI installed, for fast iteration — see `build_warehouse.py` and `sql/kpi_models.sql`.
+A DuckDB-based local prototype mirrors the same flow without requiring Snowflake, dbt, or Power BI. See `build_warehouse.py` and `sql/kpi_models.sql`.
 
-## Technology stack
+## Technology Stack
 
-| Layer | Tool | Purpose |
+| Layer | Technology | Purpose |
 |---|---|---|
-| Data source | CMS DE-SynPUF | Synthetic Medicare beneficiary and claims data |
-| ETL | PySpark / DuckDB | Ingest, standardize types, deduplicate claim segments |
-| Local storage | CSV / DuckDB file | Landing zone and prototype warehouse during local development |
-| Data warehouse | Snowflake | RAW landing tables, plus compute for dbt's transformations |
-| Analytics engineering | dbt | Star schema, denial-simulation logic, testing, KPI marts |
-| BI and reporting | Power BI | Denial Control Tower dashboard |
-| Version control | Git and GitHub | Source control and portfolio repository |
+| Data | CMS DE-SynPUF | Synthetic Medicare claims |
+| ETL | PySpark / DuckDB | Ingestion, standardization, deduplication |
+| Warehouse | Snowflake | RAW data and dbt transformations |
+| Analytics | dbt | Star schema, denial logic, tests, KPI marts |
+| BI | Power BI | Denial Control Tower dashboard |
+| Version Control | Git / GitHub | Source control |
 
-## Data model
+## Data Model
 
-The dimensional model is built in dbt, from the CMS DE-SynPUF Inpatient and Outpatient Claims samples and the 2008–2010 Beneficiary Summary files, after PySpark has deduplicated and standardized them.
+The dbt model is built around a claim-level fact table and supporting dimensions:
 
-- **Dim_Patient** — one row per beneficiary (latest snapshot year), with demographics and a `chronic_condition_count` derived from the 11 CMS chronic-condition flags. Built in `dbt/models/marts/dim_patient.sql`.
-- **Dim_Provider** — one row per `PRVDR_NUM`, with attending NPI and claim volume.
-- **Dim_Diagnosis** — one row per ICD-9-CM diagnosis code appearing on a claim, with a `diagnosis_category_approx` derived in dbt (Circulatory, Endocrine/Metabolic, Respiratory, Injury/Poisoning, V-code, E-code, Other). *Note: this data predates the 2015 ICD-10 transition — see Future Improvements.*
-- **Dim_CARC_Denials** — one row per Claim Adjustment Reason Code, with a `preventability_bucket` derived in dbt (Preventable – Process, Preventable – Front-End, Non-Preventable – Coverage, Non-Preventable – Clinical, Non-Preventable – Patient Responsibility, Unclassified).
-- **Fact_Claims_Adjudication** — one row per claim (multi-segment claims deduplicated), joined to a simulated `adjudication_status` and `CARC_CODE` since the source data carries no true denial field, plus an `AR_AGING_BUCKET` computed against the sample's own as-of date.
-- **KPI marts** (`kpi_header_cards`, `kpi_clean_claim_rate_by_provider`, `kpi_ar_aging_matrix`, `kpi_top_carc_denials`) — the wide, pre-aggregated analytics marts that power the dashboard, computed in dbt.
+- **Dim_Patient** — beneficiary demographics and chronic-condition count.
+- **Dim_Provider** — provider information and claim volume.
+- **Dim_Diagnosis** — ICD-9-CM diagnosis codes and broad categories.
+- **Dim_CARC_Denials** — denial reasons and preventability classification.
+- **Fact_Claims_Adjudication** — one row per deduplicated claim, with modeled adjudication status, CARC, and A/R aging.
+- **KPI marts** — pre-aggregated tables for dashboard KPIs.
 
-## How to run
+The diagnosis data is based on ICD-9-CM because the source predates the 2015 ICD-10 transition.
 
-### 1. Local prototype (DuckDB, no other infrastructure needed)
+## How to Run
 
-```
+### 1. Local prototype
+
+```bash
 pip install duckdb pandas openpyxl
-python build_warehouse.py           # builds the star schema + denial simulation
-python export_dashboard_data.py     # runs sql/kpi_models.sql, exports dashboard JSON
+
+python build_warehouse.py
+python export_dashboard_data.py
 ```
 
-Open `dashboard/denial_control_tower_dashboard.html` to view the results directly.
+Then open:
 
-### 2. PySpark (production-scale ingestion)
-
-```
-spark-submit production/pyspark/ingest_claims.py \
-  --input  s3://your-bucket/synpuf/ \
-  --output s3://your-bucket/warehouse/
-
-python production/pyspark/load_carc_dimension.py \
-  --input  CARC_Codes.xlsx \
-  --output s3://your-bucket/warehouse/Dim_CARC_Denials
+```text
+dashboard/denial_control_tower_dashboard.html
 ```
 
-### 3. Snowflake (RAW schema only)
+### 2. PySpark
 
-Load the Parquet output from step 2 into a `RAW` schema in Snowflake. This step loads landing tables only — the star schema (dimensions, fact, marts) does not exist yet at this point.
+```bash
+spark-submit production/pyspark/ingest_claims.py   --input s3://your-bucket/synpuf/   --output s3://your-bucket/warehouse/
 
-### 4. dbt (builds the entire star schema and KPI marts)
-
+python production/pyspark/load_carc_dimension.py   --input CARC_Codes.xlsx   --output s3://your-bucket/warehouse/Dim_CARC_Denials
 ```
+
+### 3. Snowflake
+
+Load the Parquet output into the `RAW` schema. This stage contains the landing tables; the dimensional model is built by dbt.
+
+### 4. dbt
+
+```bash
 cd production/dbt_project
+
 dbt debug
 dbt run
 dbt test
 ```
 
-`dbt run` creates every star-schema and mart object — `dim_patient`, `dim_provider`, `dim_diagnosis`, `dim_carc_denials`, `fact_claims_adjudication`, and the four `kpi_*` marts — from the RAW tables loaded in step 3. `dbt test` runs the `not_null`, `unique`, and `accepted_values` data-integrity tests defined in `schema.yml`.
+This builds the dimensions, fact table, and KPI marts.
 
 ### 5. Power BI
 
-Connect Power BI to the `kpi_*` marts for a fast start, or to the full star schema for custom measures — see `production/powerbi/POWER_BI_SETUP.md` for field-by-field visual instructions, and `Claims_Adjudication_PowerBI_Data.xlsx` for a ready-to-import data source covering both approaches.
+Connect Power BI to the KPI marts for the dashboard, or connect to the full star schema for custom analysis.
 
-## Denial Control Tower dashboard
+See `production/powerbi/POWER_BI_SETUP.md` for the setup instructions.
 
-KPIs and visuals built from the KPI marts:
+## Denial Control Tower
 
-- First-Pass Clean Claim Rate (national and by provider)
+The dashboard focuses on:
+
+- First-Pass Clean Claim Rate
 - Net Collection Ratio
-- 30/60/90+ day A/R aging, by provider (heatmap matrix)
-- Top Claim Adjustment Reason Codes (CARCs) ranked by estimated financial loss
-- Preventable vs. non-preventable denial mix
+- 30/60/90+ day A/R aging
+- Top CARCs by estimated financial exposure
+- Preventable vs. non-preventable denials
+- Provider-level performance
 
-Across the claims in this sample, the First-Pass Clean Claim Rate is approximately 96.2%, with duplicate submissions (CARC 18), missing information (CARC 16), and absent authorization (CARC 197) the three highest-loss denial reasons.
+For this modeled sample, the First-Pass Clean Claim Rate is approximately **96.2%**. CARC 18 (duplicate claim), CARC 16 (missing information), and CARC 197 (authorization-related) are the three highest-loss modeled denial reasons.
 
-## Future improvements
+## Important Data Limitation
 
-- **Load the full star schema into Power BI** rather than just the pre-aggregated KPI marts: import `Fact_Claims_Adjudication` alongside all four `Dim_*` tables, build relationships in Model view on `PATIENT_ID` / `PROVIDER_ID` / `DIAGNOSIS_CODE` / `CARC_CODE`, and write custom DAX measures directly against the claim grain — enabling slices the current marts don't support (e.g., denial rate by patient age band or chronic-condition count).
-- Replace the rules-based denial simulation with real 835/EOB remittance data once available, so CARC assignment reflects actual payer adjudication rather than a modeled distribution.
-- Apply a CMS General Equivalence Mapping (GEM) crosswalk to translate `Dim_Diagnosis`'s ICD-9-CM codes into ICD-10-CM, enabling joins against current code lookups and category rollups.
-- Add incremental/merge loading in dbt once newer claims extracts are available, rather than full-refresh.
-- Extend the model with a true charge-master or billed-amount source, replacing the avg-paid-amount proxy currently used for "$ at risk" on denied claims.
-- Add a CI job (GitHub Actions) that runs `dbt build` on every pull request against a Snowflake dev database.
+The DE-SynPUF dataset is synthetic and does not contain actual payer denial/CARC data.
+
+Therefore:
+
+- Denial status is modeled.
+- CARC assignment is modeled.
+- Preventability is rules-based.
+- Dollar exposure uses real paid amounts but applies them to modeled denials.
+
+The dashboard should therefore be viewed as an **analytics engineering demonstration**, not as an analysis of actual payer denial performance.
+
+## Future Improvements
+
+- Replace modeled denials with real 835/EOB remittance data.
+- Replace the paid-amount proxy with actual billed/charge data.
+- Add the full star schema to Power BI for deeper analysis.
+- Add ICD-9 → ICD-10 mapping using CMS GEMs.
+- Add incremental/merge loading in dbt.
+- Add GitHub Actions to run `dbt build` against a Snowflake development database.
