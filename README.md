@@ -1,10 +1,24 @@
 # Medical Insurance Claims & Denial Analytics
 
-An end-to-end data pipeline that turns CMS Data Entrepreneurs' Synthetic Public Use File (DE-SynPUF) claims data into an executive dashboard for identifying insurance claim denial patterns and revenue-cycle bottlenecks.
+Every claim a payer denies carries a Claim Adjustment Reason Code (CARC) stating why — a duplicate submission, a missing prior authorization, a coverage exclusion — and each reason implies a different fix, a different owner, and a different dollar amount stuck in accounts receivable. This project takes a payer's raw claims and denial codes and turns them into a ranked list of which CARCs are costing the most money and which of those losses are actually preventable, so a revenue-cycle team knows what to fix first instead of triaging denials one claim at a time.
 
 ## Business problem
 
-Insurance claims are sometimes delayed or denied because of problems like duplicate submissions, missing information, or coverage issues. Finding these problems across thousands of claims can be difficult. This project uses CMS's synthetic healthcare claims data to build a data warehouse and an interactive Power BI dashboard that helps identify the most common denial reasons, compare provider performance, and highlight where improvements can reduce delays and financial losses.
+Denial codes are only useful in aggregate: one duplicate claim is a keying error, but thousands of them, sorted by CARC and priced out in dollars at risk, is a process fix worth prioritizing. Manually triaging that volume claim-by-claim — across denial reason, provider, and aging bucket — doesn't scale, so this project builds a data warehouse and an interactive dashboard on top of CMS's synthetic healthcare claims data to surface the highest-dollar, most-preventable denial patterns, compare provider performance, and flag where fixing the front end of the revenue cycle would recover the most money.
+
+### Worked example: CARC 18
+
+*DE-SynPUF carries no real denial/CARC field, so this project models one (see the `Fact_Claims_Adjudication` note under Data model) — read the numbers below as a product of that model, not as observations.*
+
+- **The code:** CARC 18, "Exact duplicate claim/service" — the same claim line submitted to the payer more than once.
+- **Why it dominates this dataset:** a claim is flagged `Denied` when `CLM_PMT_AMT` is null or zero, and `pyspark/ingest_claims.py` then assigns every denied claim a CARC by drawing from a fixed, seeded weight table (`F.rand(seed=42)` against `{"18": 18, "16": 15, "197": 12, "50": 12, ...}`). CARC 18 carries the highest weight in that table, so it comes out as the most frequent code by construction — the weights are chosen to mirror typical real-world RCM denial-reason frequency, but the resulting counts are modeled, not measured.
+- **What the pipeline does with it:** `dim_carc_denials` tags CARC 18 as `Preventable - Process`; `kpi_top_carc_denials` counts every claim assigned CARC 18 and multiplies that count by the average `billed_paid_amt` across claims with `adjudication_status = 'Paid - First Pass'` — a real DE-SynPUF payment amount, not a modeled one — to estimate the dollars at stake:
+  ```sql
+  select carc_code, denial_count, estimated_financial_loss
+  from kpi_top_carc_denials
+  where carc_code = '18';
+  ```
+- **The dollar figure it rolls into:** whatever that query returns once the pipeline is run against a DE-SynPUF sample — real paid amounts, applied to a modeled denial count. Replacing the simulation with actual 835/EOB remittance data (see Future improvements) would make both the count and the dollar figure real.
 
 ## Architecture
 
